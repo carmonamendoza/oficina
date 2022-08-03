@@ -1,0 +1,23 @@
+
+-- iniciar python seteando el ambiente de odoo
+
+update res_partner
+  set x_exo_total_many = 'T'
+  where x_special_tax_type = 'E';
+
+
+for partner in self.env['res.partner'].search([('x_special_tax_type','=','E')]):
+    print('>> partner: ', partner.name)
+    if partner.x_exo_exoneration_number:
+        values = {'partner_id': partner.id,
+                  'exoneration_number': partner.x_exo_exoneration_number,
+                  'type_exoneration': partner.x_exo_type_exoneration.id,
+                  'institution_name': partner.x_exo_institution_name,
+                  'date_issue': partner.x_exo_date_issue,
+                  'date_expiration': partner.x_exo_date_expiration,
+                  'fiscal_position_id': partner.property_account_position_id.id,
+                  'has_cabys': False,
+                }
+        self.env['res.partner.exoneration'].sudo().create(values)
+
+self.env.cr.commit()

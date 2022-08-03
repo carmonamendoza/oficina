@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <record id="model_xfae_accounting_incoming_documents" model="ir.actions.server">
+            <field name="name">Contabilizar</field>
+            <field name="model_id" ref="FAE_app.model_xfae_incoming_documents"/>
+            <field name="binding_model_id" ref="FAE_app.model_xfae_incoming_documents"/>
+            <field name="binding_view_types">list</field>
+            <field name="state">code</field>
+            <field name="code">
+                if records:
+                    for rec in records:
+                        action = rec.action_accounting_doc()
+            </field>
+    </record>
+
+</odoo>
