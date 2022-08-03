@@ -34,10 +34,6 @@ class PartnerElectronic(models.Model):
                                         help='Indica si al cliente requiere un cálculo de impuesto especial (posición fiscal)' )
 
     x_exo_has_exoneration = fields.Boolean(string="Exonerado", required=False)
-    # x_exo_total_many = fields.Selection(string="Tipo",
-    #                                     selection=[('T', 'Exonera Todos los productos'),
-    #                                                ('M', 'Exonera Algunos CAByS')],
-    #                                     default='T', )
     x_exo_modality = fields.Selection(string="Tipo",
                                         selection=[('T', 'Exonera Todos los productos'),
                                                    ('M', 'Exoneración por CAByS')],

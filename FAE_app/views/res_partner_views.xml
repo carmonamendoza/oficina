@@ -61,7 +61,7 @@
                     <field name="x_exo_has_exoneration" invisible="1"/>
                     <page name="exoneration_tab" string="Exoneración" attrs="{'invisible': [('x_special_tax_type','!=','E')]}">
                         <label for="x_exo_modality" string="Tipo" style="padding-right:30px;"/>
-                        <field name="x_exo_modality" nolabel="1" widget="radio" options="{'horizontal': true}" />
+                        <field name="x_exo_modality" nolabel="1" widget="radio" options="{'horizontal': true}" readonly="1" force_save="1"/>
                         <group attrs="{'invisible': [('x_exo_modality','!=','T')]}" >
 <!--                        <group attrs="{'invisible': True}">-->
                             <group>
