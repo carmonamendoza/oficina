@@ -6,6 +6,7 @@ from datetime import timedelta, datetime
 import phonenumbers
 import logging
 from . import fae_utiles
+from odoo.tools import float_compare
 
 
 _logger = logging.getLogger(__name__)
@@ -37,7 +38,8 @@ class PartnerElectronic(models.Model):
     x_exo_modality = fields.Selection(string="Tipo",
                                         selection=[('T', 'Exonera Todos los productos'),
                                                    ('M', 'Exoneración por CAByS')],
-                                        default='T', )
+                                        default='T',
+                                        copy=False)
     x_exo_type_exoneration = fields.Many2one("xexo.authorization", string="Tipo Exoneración", required=False, )
     x_exo_exoneration_number = fields.Char(string="número exoneración", size=40, required=False, )
     x_exo_institution_name = fields.Char(string="Nombre Institución", size=160, required=False, 
@@ -97,6 +99,11 @@ class PartnerElectronic(models.Model):
                            'message': 'El correo electrónico para FAE no cumple con una estructura válida. ' + str(self.x_email_fae)
                           }
                 return {'value': vals, 'warning': alerta}
+
+    @api.onchange('x_exo_modality')
+    def _onchange_x_exo_modality(self):
+        if self.x_exo_modality == 'M':
+            self.property_account_position_id = None
 
     @api.onchange('x_exo_exoneration_number')
     def _onchange_x_exo_exoneration_number(self):
@@ -187,13 +194,27 @@ class PartnerElectronic(models.Model):
             res = {'warning': {'title': json_response["status"], 'message': json_response["text"]}}
         return res
 
+    def get_exoneration_by_cabys(self, fecha, cabys_id):
+        exoneration = None
+        if cabys_id:
+            exo_lines = self.x_exoneration_lines.filtered(lambda exo: exo.active and exo.account_tax_id
+                                                                and exo.date_issue.date() <= fecha <= (
+                                                                                    exo.date_expiration and exo.date_expiration.date() or fecha))
+            if exo_lines:
+                exo_lines = exo_lines.sorted(key=lambda r: r.date_issue, reverse=True)
+                for exo_line in exo_lines:
+                    if exo_line.cabys_list and cabys_id.code in exo_line.cabys_list:
+                        exoneration = exo_line
+                        break
+        return exoneration
 
 class PartnerExoneration(models.Model):
     _name = "xpartner.exoneration"
     _description = 'Exoneration for partner'
+    _rec_name = "exoneration_number"
 
     partner_id = fields.Many2one("res.partner", string="Cliente")
-    type_exoneration = fields.Many2one("xexo.authorization", string="Tipo Exoneración" )
+    type_exoneration = fields.Many2one("xexo.authorization", string="Tipo Exoneración", required=True )
     exoneration_number = fields.Char(string="Núm.Exoneración", size=40, required=True, )
     institution_name = fields.Char(string="Nombre Institución", size=160,
                                     help='Nombre de la Institución que emitió la exoneración' )

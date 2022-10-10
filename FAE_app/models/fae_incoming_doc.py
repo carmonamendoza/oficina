@@ -247,7 +247,7 @@ class XFaeIncomingDoc(models.Model):
             raise Warning('El total impuestos acreditados no puede ser mayor al impuesto pagado' )
 
     def get_name_for_bill(self):
-        return self.issuer_sequence + '.' + self.issuer_identification_num
+        return self.issuer_sequence + '-' + self.issuer_identification_num
 
     # descarga los documentos recibidos en el correo
     def read_email(self):
@@ -396,10 +396,10 @@ class XFaeIncomingDoc(models.Model):
         # _logger.info('>> fae_incoming_doc.read_email: date_str %s', date_str )
         # documents = self.env['xfae.incoming.documents'].search([('bill_date', '<', date_str), ('ready2accounting', '=', False), ('code_accept', '=', False)])
         documents = self.env['xfae.incoming.documents'].search([('bill_date', '<', date_str), ('code_accept', '=', False)])
-        for rec in documents:
-            if rec.company_id and rec.response_state != '3':
-                rec.code_accept = 'AA'
-                rec.ready2accounting = True
+        # for rec in documents:
+        #     if rec.company_id and rec.response_state != '3':
+        #         rec.code_accept = 'AA'
+        #         rec.ready2accounting = True
 
         return True
 

@@ -46,6 +46,8 @@
                     <field name="code_accept"/>
                     <field name="sequence"/>
                     <field name="state_response_dgt"/>
+                    <field name="create_date" optional="hide"/>
+                    <field name="origin" optional="hide"/>
                 </tree>
             </field>
         </record>

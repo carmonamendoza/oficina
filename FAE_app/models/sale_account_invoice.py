@@ -1,13 +1,12 @@
 from odoo import models, fields, api, _
 
 from xml.sax.saxutils import escape
+from odoo.tools.misc import get_lang
 import base64
 import datetime
 import time
 import pytz
 import json
-
-from lxml import etree
 
 from . import fae_utiles
 from . import fae_enums
@@ -22,13 +21,12 @@ class AccountMoveReversal(models.TransientModel):
     _inherit = "account.move.reversal"
 
     def _prepare_default_reversal(self, move):
-        reverse_date = self.date if self.date_mode == 'custom' else move.date
+        data = super(AccountMoveReversal, self)._prepare_default_reversal(move)
         document_type_dest = None
         if move.move_type == 'out_invoice' and move.x_state_dgt not in ('2', 'FI'):
             document_type_dest = 'NC'
         elif move.move_type == 'out_refund' and move.x_state_dgt not in ('2', 'FI'):
             document_type_dest = 'ND'
-        name = None
         if move.x_state_dgt != '1':
             name = move._compute_name_value(move.company_id.id, 'out_refund')
         else:
@@ -722,7 +720,7 @@ class FaeAccountInvoice(models.Model):
                         sale_condition_code = '01'
 
                     if write_log:
-                        _logger.info('>> generate_xml_and_send: Procesa lineas')
+                        _logger.info('>> generate_xml_and_send_dgt: Procesa lineas')
                     # procesa las líneas del movimiento
                     for inv_line in inv.invoice_line_ids:
 
@@ -752,10 +750,15 @@ class FaeAccountInvoice(models.Model):
                             # calcula el precio unitario sin el impuesto incluido
                             line_taxes = inv_line.tax_ids.compute_all(inv_line.price_unit, inv.currency_id, 1.0, product=inv_line.product_id,
                                                                       partner=inv.partner_id)
-
-                            price_unit = round(line_taxes['total_excluded'], 5)
+                            if len(line_taxes['taxes']) == 1 and line_taxes['taxes'][0].get('price_include', False):
+                                # impuesto incluido en el precio (se asume que solo hay un impuesto por articulo)
+                                tax_incl = 1 + ((inv_line.tax_ids[0].amount or 0) / 100)
+                                price_unit = inv_line.price_unit / tax_incl
+                            else:
+                                price_unit = line_taxes['total_excluded']
                             base_line = round(price_unit * inv_line.quantity, 5)
-                            descuento = inv_line.discount and round(price_unit * inv_line.quantity * inv_line.discount / 100.0, 5) or 0.0
+                            descuento = round(inv_line.discount and round(price_unit * inv_line.quantity * inv_line.discount / 100.0, 5) or 0.0, 5)
+                            price_unit = round(price_unit, 5)
 
                             subtotal_line = round(base_line - descuento, 5)
 
@@ -838,6 +841,9 @@ class FaeAccountInvoice(models.Model):
                                         }
                                         # Se genera la exoneración si existe para este impuesto
                                         if has_exoneration:
+                                            if not inv.partner_id.property_account_position_id and not inv_line.x_exoneration_id:
+                                                raise UserError('El artículo: %s, tiene un impuesto exonerado pero no tiene asignado el número de exoneración',
+                                                                inv_line.product_id.default_code)
                                             perc_exoneration = taxes_lookup[i['id']]['porc_exoneracion']
                                             tax_amount_exo = round(subtotal_line * (perc_exoneration / 100), 2)
                                             if tax_amount_exo > tax_amount:
@@ -845,7 +851,11 @@ class FaeAccountInvoice(models.Model):
 
                                             acum_line_tax -= tax_amount_exo  # resta la exoneracion al acumulado de impuesto
                                             tax["exoneracion"] = {"monto_exonera": tax_amount_exo,
-                                                                  "porc_exonera": perc_exoneration}
+                                                                  "porc_exonera": perc_exoneration
+                                                                  }
+                                            if inv_line.x_exoneration_id:
+                                                tax["exoneracion"].update({"exoneration_id": inv_line.x_exoneration_id.id})
+
                                         taxes[itax] = tax
 
                                 if acum_line_tax > 0.01 and (not taxes or not taxes[1].get('cod_tarifa_imp')):
@@ -902,7 +912,7 @@ class FaeAccountInvoice(models.Model):
                         continue
 
                     if write_log:
-                        _logger.info('>> generate_xml_and_send: Continua generando el consecutivo')
+                        _logger.info('>> generate_xml_and_send_dgt: Continua generando el consecutivo')
 
                     # Genera el consecutivo y clave de 50
                     gen_consecutivo = False
@@ -939,7 +949,7 @@ class FaeAccountInvoice(models.Model):
                         if sequence.number_next_actual >= 5:
                             consecutivo = sequence.get_next_char(sequence.number_next_actual - 1)
                             prev_x_sequence = fae_utiles.gen_consecutivo(inv.x_document_type, consecutivo, inv.company_id.x_sucursal, inv.company_id.x_terminal)
-                            consecutivo = sequence.get_next_char(sequence.number_next_actual - 20)
+                            consecutivo = sequence.get_next_char(sequence.number_next_actual - min(20, sequence.number_next_actual-1))
                             from_x_sequence = fae_utiles.gen_consecutivo(inv.x_document_type, consecutivo, inv.company_id.x_sucursal, inv.company_id.x_terminal)
 
                             sql_cmd = """
@@ -981,7 +991,7 @@ class FaeAccountInvoice(models.Model):
                         inv.name = inv.x_sequence
                         inv.payment_reference = None
                     # se considera importante registra en el LOG la generación de la clave de hacienda
-                    _logger.info('>> generate_xml_and_send: Account_move id: %s generó clave: %s  Fec.emision: %s', str(inv.id), inv.x_electronic_code50, inv.x_issue_date)
+                    _logger.info('>> generate_xml_and_send_dgt: Account_move id: %s generó clave: %s  Fec.emision: %s', str(inv.id), inv.x_electronic_code50, inv.x_issue_date)
                     #
                     total_servicio_gravado = round(total_servicio_gravado, 5)
                     total_servicio_exento = round(total_servicio_exento, 5)
@@ -998,7 +1008,7 @@ class FaeAccountInvoice(models.Model):
                     if inv.company_id.x_situacion_comprobante == '1':
                         # crea el XML
                         if write_log:
-                            _logger.info('>> generate_xml_and_send: generando el xml de documento %s', inv.x_sequence)
+                            _logger.info('>> generate_xml_and_send_dgt: generando el xml de documento %s', inv.x_sequence)
                         try:
                             xml_str = fae_utiles.gen_xml_v43(inv, sale_condition_code, total_servicio_gravado, total_servicio_exento, total_servicio_exonerado
                                                              , total_mercaderia_gravado, total_mercaderia_exento, total_mercaderia_exonerado
@@ -1039,9 +1049,12 @@ class FaeAccountInvoice(models.Model):
                 if inv.x_state_dgt == '1':
                     response_status = 400
                     response_text = 'ya había sido enviado a la DGT'
+                elif not inv.x_sequence:
+                    inv.message_post(subject='Note', body='No fue posible generar el número de documento electrónico')
+                    continue
                 else:
                     if write_log:
-                        _logger.info('>> generate_xml_and_send:  Enviad XML %s a la DGT', inv.x_sequence)
+                        _logger.info('>> generate_xml_and_send_dgt:  Envia XML %s a la DGT', inv.x_sequence)
                     response_json = fae_utiles.send_xml_fe(inv, inv.x_issue_date, xml_firmado, inv.company_id.x_fae_mode)
                     response_status = response_json.get('status')
                     response_text = response_json.get('text')
@@ -1123,7 +1136,9 @@ class FaeAccountInvoice(models.Model):
         if not lang:
             lang = get_lang(self.env).code
 
-        email_template.attachment_ids = [(5)]   # delete all attachments ids del template
+        # A partir de alguna actualización, lo siguiente generaba un error, por lo que se dejó de ejecutar.
+        # email_template.attachment_ids = [(5)]   # delete all attachments ids del template
+        attachment_ids = []
 
         if self.partner_id:
             partner_email = (self.partner_id.x_email_fae or self.partner_id.email)
@@ -1131,18 +1146,19 @@ class FaeAccountInvoice(models.Model):
                 attachment = self.env['ir.attachment'].search([('res_model','=','account.move'),
                                                                 ('res_id','=',self.id),
                                                                 ('res_field','=','x_xml_comprobante')], limit=1 )
+
                 if attachment:
+                    attachment_ids = [attachment.id]
                     attachment.name = self.x_xml_comprobante_fname
                     attachment_resp = self.env['ir.attachment'].search( [('res_model', '=', 'account.move'),
                                                                         ('res_id', '=', self.id),
                                                                         ('res_field', '=', 'x_xml_respuesta')], limit=1 )
-                    if not attachment_resp:
-                        # (6, 0, [IDs]) replace the list of linked IDs (like using (5) then (4,ID) for each ID in the list of IDs)
-                        email_template.attachment_ids = [(6, 0, [attachment.id])]
-                    else:
+                    if attachment_resp:
                         # solo si se tienen los 2 XMLS se incluyen en el correo
                         attachment_resp.name = self.x_xml_respuesta_fname
-                        email_template.attachment_ids = [(6, 0, [attachment.id, attachment_resp.id])]
+                        attachment_ids += [attachment_resp.id]
+
+        email_template.write({'attachment_ids': attachment_ids})
 
         compose_form = self.env.ref('account.account_invoice_send_wizard_form', raise_if_not_found=False)
 
@@ -1155,7 +1171,8 @@ class FaeAccountInvoice(models.Model):
                     mark_invoice_as_sent=True,
                     custom_layout="mail.mail_notification_paynow",
                     model_description=self.with_context(lang=lang).type_name,
-                    force_email=True
+                    force_email=True,
+                    default_is_print=False
                     )
 
         return {
