@@ -785,3 +785,4 @@ class XFaeIncomingDocDetailTaxes(models.Model):
     amount = fields.Float(string='Monto')
     exoneration_rate = fields.Float(string='% Exoneración')
     exoneration_amount = fields.Float(string='Exoneración')
+

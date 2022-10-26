@@ -31,33 +31,21 @@ class AccountMoveReversal(models.TransientModel):
             name = move._compute_name_value(move.company_id.id, 'out_refund')
         else:
             name = move._compute_name_value_temp(move.company_id.id)
-
-        data = {
-            'name': name if name else '/',
-            'ref': _('Reversal of: %(move_name)s, %(reason)s', move_name=move.name, reason=self.reason)
-                   if self.reason
-                   else _('Reversal of: %s', move.name),
-            'date': reverse_date,
-            'invoice_date': move.is_invoice(include_receipts=True) and (self.date or move.date) or False,
-            'journal_id': self.journal_id and self.journal_id.id or move.journal_id.id,
-            'invoice_payment_term_id': None,
-            'invoice_user_id': move.invoice_user_id.id,
-            'auto_post': True if reverse_date > fields.Date.context_today(self) else False,
-            }
-
+        data['name'] = name if name else '/'
         data['x_document_type'] = document_type_dest
+        data['x_origin_move'] = 'reversal'       # Wizard_reversal
         if document_type_dest:
             rec_reference_code = self.env['xreference.code'].search([('code', '=', '01')], limit=1)
-            ref_docum_code = fae_enums.tipo_doc_num.get(move.x_document_type) 
+            ref_docum_code = fae_enums.tipo_doc_num.get(move.x_document_type)
             rec_reference_document_type = False
             if ref_docum_code:
-                rec_reference_document_type = self.env['xreference.document'].search([('code','=',ref_docum_code)], limit=1)                
+                rec_reference_document_type = self.env['xreference.document'].search([('code','=',ref_docum_code)], limit=1)
             data['x_economic_activity_id'] = move.x_economic_activity_id.id
             data['x_payment_method_id'] = move.x_payment_method_id.id
             data['x_reference_code_id'] = rec_reference_code.id
             data['x_invoice_reference_id'] = move.id
-            data['x_reference_document_type_id'] = rec_reference_document_type.id
-
+            if rec_reference_document_type:
+                data['x_reference_document_type_id'] = rec_reference_document_type.id
         return data
 
 
@@ -73,21 +61,60 @@ class FaeAccountInvoiceLine(models.Model):
     x_other_charge_partner_id = fields.Many2one("res.partner", string="Tercero otros cargos",)
     x_economic_activity_id = fields.Many2one("xeconomic.activity", string="Actividad Económica", required=False,
                                             context={'active_test': False}, )
-    x_exoneration_id = fields.Many2one('xpartner.exoneration', string='Exoneración', copy=False)
+    x_exoneration_id = fields.Many2one('xpartner.exoneration', string='Exoneración', copy=True)
 
     @api.onchange('tax_ids')
     def _onchange_tax(self):
         move = self.move_id
-        if not move.is_sale_document():
+        if not move.is_sale_document() or not(self.product_id or self.name):
             return
-        for tax in self.tax_ids:
-            if tax.x_has_exoneration:
-                if not move.partner_id:
-                    raise ValidationError('El impuesto: %s es para exoneración pero el documento no le han definido un cliente' % tax.name)
-                if move.partner_id.x_special_tax_type != 'E':
-                    raise ValidationError('El impuesto: %s es para exoneración pero el cliente no tiene definido que es exonerado' % tax.name)
-                if not move.partner_id.property_account_position_id:
-                    raise ValidationError('El impuesto: %s es para exoneración pero el cliente no tiene definido la posición fiscal' % tax.name)
+        exonerated = False
+        exoneration = None
+        if self.tax_ids:
+            today = datetime.date.today()
+            exoneration = move.partner_id.get_exoneration_by_cabys(today, self.product_id.x_cabys_code_id)
+            tax_ids = self.tax_ids
+            for tax in tax_ids:
+                if tax.x_has_exoneration:
+                    if not move.partner_id:
+                        raise ValidationError('El impuesto: %s es para exoneración pero el documento no le han definido un cliente' % tax.name)
+                    if move.partner_id.x_special_tax_type != 'E':
+                        raise ValidationError('El impuesto: %s es para exoneración pero el cliente no tiene definido que es exonerado, prod: %s, cta: %s'
+                                              % (tax.name, (self.product_id and self.product_id.default_code), (self.account_id and self.account_id.code)))
+                    if move.partner_id.x_exo_modality != 'M' and not move.partner_id.property_account_position_id:
+                        raise ValidationError('El impuesto: %s es para exoneración pero el cliente no tiene definido la posición fiscal' % tax.name)
+                    elif move.partner_id.x_exo_modality == 'M' and not exoneration:
+                        raise ValidationError('El impuesto: %s es para exoneración pero el CAByS del producto no está presente en alguna exoneración del cliente' % tax.name)
+                    if exoneration:
+                        if tax.id.origin != exoneration.account_tax_id.id:
+                            tax_ids -= tax  # quita el tax exonerado que no corresponde con el de la exoneración
+                        if exoneration.account_tax_id not in tax_ids:
+                            exonerated = True
+                            # tax_ids += exoneration.account_tax_id
+                            tax_ids = exoneration.account_tax_id
+            self.tax_ids = tax_ids
+        self.x_exoneration_id = exoneration.id if exonerated and exoneration else None
+
+    def _get_computed_taxes(self):
+        self.ensure_one()
+        tax_ids = super()._get_computed_taxes()
+        move = self.move_id
+        if move.is_sale_document(include_receipts=True):
+            today = datetime.date.today()
+            exoneration = None
+            exonerated = False
+            if move.partner_id.x_special_tax_type == 'E' and move.partner_id.x_exo_modality == 'M' and self.product_id.x_cabys_code_id:
+                exoneration = move.partner_id.get_exoneration_by_cabys(today, self.product_id.x_cabys_code_id)
+                if exoneration:
+                    for tax in tax_ids:
+                        if tax.amount > exoneration.account_tax_id.amount:
+                            tax_ids -= tax      # quita el tax de la lista para agregar el nuevo
+                            if exoneration.account_tax_id not in tax_ids:
+                                exonerated = True
+                                # tax_ids += exoneration.account_tax_id
+                                tax_ids = exoneration.account_tax_id
+            self.x_exoneration_id = exoneration.id if exonerated and exoneration else None
+        return tax_ids
 
     @api.onchange('debit')
     def _onchange_debit(self):
@@ -130,7 +157,7 @@ class FaeAccountInvoice(models.Model):
     line_ids = fields.One2many('account.move.line', 'move_id', string='Journal Items', copy=True, readonly=True, )
     x_generated_dgt = fields.Boolean(compute='_compute_x_editable_generated_dgt', readonly=True)
     x_move_editable = fields.Boolean(compute='_compute_x_editable_generated_dgt', readonly=True)
-    x_accounting_lock = fields.Boolean(compute='_compute_x_editable_generated_dgt', readonly=True) 
+    x_accounting_lock = fields.Boolean(compute='_compute_x_editable_generated_dgt', readonly=True)
 
     #
     x_economic_activity_id = fields.Many2one("xeconomic.activity", string="Actividad Económica", required=False,
@@ -142,7 +169,7 @@ class FaeAccountInvoice(models.Model):
                                                 ('ND', 'Nota de Débito'),
                                                 ('NC', 'Nota de Crédito'),
                                                 ('FEC', 'Factura de Compra')],
-                                        required=False, default=_default_document_type, 
+                                        required=False, default=_default_document_type,
                                         )
     x_sequence = fields.Char(string="Núm.Consecutivo", required=False, readonly=True, copy=False, index=True)
     x_electronic_code50 = fields.Char(string="Clave Numérica", required=False, copy=False, index=True)
@@ -151,7 +178,7 @@ class FaeAccountInvoice(models.Model):
     x_state_dgt = fields.Selection(string="Estado DGT",
                                     copy=False,
                                     selection=[('PRO', 'Procesando'),
-                                               ('POS', 'Pendiente en POS'),                                    
+                                               ('POS', 'Pendiente en POS'),
                                                ('1', 'Aceptado'),
                                                ('2', 'Rechazado'),
                                                ('FI', 'Firma Inválida'),
@@ -193,9 +220,17 @@ class FaeAccountInvoice(models.Model):
 
     x_partner_vat = fields.Char(related='partner_id.vat')
     x_fae_incoming_doc_id = fields.Many2one("xfae.incoming.documents", string="Doc.Electrónico",
-                                        required=False, 
+                                        required=False,
                                         domain="[('document_type','=',x_document_type),('issuer_identification_num','=',x_partner_vat),('ready2accounting','=',True),('invoice_id','=',False)]",
                                         )
+
+    x_from_sale = fields.Boolean(string='Origen Ventas', default=False, copy=False,
+                                 help='Indica si el movimiento proviene del módulo de ventas')
+    # ayuda a determinar en donde fue originado el movimiento
+    x_origin_move = fields.Char(string='Origen Move', copy=False)
+
+    x_enable_no_document_type = fields.Boolean(string='Sin documento Electrónico', default=False, copy=False,
+                                 help='Indica si permite no indicar el tipo de documento electrónico')
 
     _sql_constraints = [('x_electronic_code50_uniq', 'unique (x_electronic_code50, company_id)',
                         "La clave numérica deben ser única"), ]
@@ -208,6 +243,19 @@ class FaeAccountInvoice(models.Model):
                 rec.x_fae_incoming_doc_id.invoice_id = False
         res = super(FaeAccountInvoice, self).unlink()
         return res
+
+    @api.returns('self', lambda value: value.id)
+    def copy(self, default=None):
+        move = super(FaeAccountInvoice, self).copy(default)
+        if move.is_sale_document(include_receipts=True) and move.partner_id.x_special_tax_type == 'E':
+            for line in move.invoice_line_ids:
+                exonerated = False
+                for tax in line.tax_ids:
+                    if tax.x_has_exoneration:
+                        exonerated = True
+                if exonerated:
+                    line.tax_ids = line._get_computed_taxes()
+        return move
 
     @api.depends('state', 'x_sequence')
     def _compute_x_editable_generated_dgt(self):
@@ -232,7 +280,7 @@ class FaeAccountInvoice(models.Model):
     @api.depends('state', 'x_sequence')
     def _compute_x_show_generate_xml_button(self):
         for inv in self:
-            if inv.is_sale_document():
+            if inv.is_sale_document() and not inv.x_enable_no_document_type:
                 # documentos de clientes
                 inv.x_show_generate_xml_button = False
                 if (inv.state == 'posted' and inv.x_document_type in ('FE','TE','FEE','ND','NC')
@@ -255,6 +303,14 @@ class FaeAccountInvoice(models.Model):
             else:
                 inv.x_show_generate_xml_button = False
 
+    @api.constrains('name')
+    def check_name(self):
+        for inv in self:
+            if inv.is_sale_document() and inv.partner_id and inv.name not in ('/', 'Draft') and inv.line_ids:
+                line = inv.line_ids.filtered(lambda r: r.account_id == inv.partner_id.property_account_receivable_id)
+                if line:
+                    line.write({'name': inv.name})
+
     @api.onchange('partner_id', 'company_id')
     def _get_economic_activities(self):
         for inv in self:
@@ -269,26 +325,25 @@ class FaeAccountInvoice(models.Model):
     @api.onchange('partner_id', 'company_id')
     def _onchange_partner_id(self):
         super(FaeAccountInvoice, self)._onchange_partner_id()
-        self.x_payment_method_id = self.partner_id.x_payment_method_id or self.x_payment_method_id
-        if self.move_type == 'out_refund':
-            self.x_document_type = 'NC'
-        elif self.partner_id and self.partner_id.x_foreign_partner:
-            self.x_document_type = 'FEE'
-        elif self.partner_id and self.partner_id.vat:
-            if self.partner_id.country_id and self.partner_id.country_id.code != 'CR':
-                self.x_document_type = 'TE'
-            elif self.partner_id.x_identification_type_id and self.partner_id.x_identification_type_id.code == '05':
-                self.x_document_type = 'TE'
+        if not self.x_enable_no_document_type:
+            self.x_payment_method_id = self.partner_id.x_payment_method_id or self.x_payment_method_id
+            if self.move_type == 'out_refund':
+                self.x_document_type = 'NC'
+            elif self.partner_id and self.partner_id.x_foreign_partner:
+                self.x_document_type = 'FEE'
+            elif self.partner_id and self.partner_id.vat:
+                if self.partner_id.country_id and self.partner_id.country_id.code != 'CR':
+                    self.x_document_type = 'TE'
+                elif self.partner_id.x_identification_type_id and self.partner_id.x_identification_type_id.code == '05':
+                    self.x_document_type = 'TE'
+                else:
+                    self.x_document_type = 'FE'
             else:
-                self.x_document_type = 'FE'
-        else:
-            self.x_document_type = 'TE'
-
+                self.x_document_type = 'TE'
         if self.is_purchase_document():
             self.x_economic_activity_id = self.partner_id.x_economic_activity_id
         else:
             self.x_economic_activity_id = self.company_id.x_economic_activity_id
-
 
     @api.onchange('partner_id')
     def _partner_changed(self):
@@ -301,18 +356,25 @@ class FaeAccountInvoice(models.Model):
                     # cuando no se conoce al momento de la emisión se usa Efectivo
                     rec = self.env['xpayment.method'].search([('code', '=', '01')], limit=1)
                     self.x_payment_method_id = rec.id
-        else:
+        elif self.is_sale_document():
             # ventas a Clientes
-            if (self.partner_id.x_special_tax_type == 'E'
+            if (self.partner_id.x_special_tax_type == 'E' and self.partner_id.x_exo_modality == 'T'
                 and not (self.partner_id.x_exo_type_exoneration and self.partner_id.x_exo_date_issue
                             and self.partner_id.x_exo_exoneration_number and self.partner_id.x_exo_institution_name) ):
                 raise UserError('El cliente es exonerado pero no han ingresado los datos de la exoneración')
             # recalcula lineas (si existen)
-            if self.line_ids and self._origin.partner_id != self.partner_id:
+            if self.line_ids and self.partner_id:
                 for line in self.line_ids:
+                    line._get_computed_taxes()
                     line._onchange_product_id()
                     line._onchange_price_subtotal()
                 self._recompute_dynamic_lines(recompute_all_taxes=True)
+
+    @api.onchange('x_enable_no_document_type')
+    def _onchange_enable_no_document(self):
+        for inv in self:
+            if inv.x_enable_no_document_type:
+                inv.x_document_type = False
 
     @api.onchange('x_document_type')
     def _document_type_changed(self):
@@ -354,6 +416,7 @@ class FaeAccountInvoice(models.Model):
                     raise UserError('El tipo de documento recibido (%s) es diferente al indicado en este movimiento (%s)'
                                     % (self.x_fae_incoming_doc_id.document_type, self.x_document_type))
                 self.ref = self.x_fae_incoming_doc_id.issuer_sequence or self.ref
+                # self.load_xml_lines()
 
     @api.onchange('ref', 'invoice_date')
     def _onchange_reference_info(self):
@@ -455,10 +518,13 @@ class FaeAccountInvoice(models.Model):
     def action_post(self):
         # _logger.info('>> action_post: entro')
         for inv in self:
-            if not inv.is_invoice() or inv.x_state_dgt:
+            if not inv.is_invoice() or inv.x_state_dgt or (inv.x_enable_no_document_type and not inv.x_document_type):
                 inv.compute_name_value()
                 super(FaeAccountInvoice, inv).action_post()
                 continue
+            # is_invoice
+            elif not inv.x_document_type and not inv.x_enable_no_document_type:
+                raise ValidationError('El tipo de documento Electrónico es obligatorio')
             else:
                 gen_doc_electronico = False
                 if inv.company_id.x_fae_mode in ('api-stag', 'api-prod'):
@@ -572,6 +638,7 @@ class FaeAccountInvoice(models.Model):
                     if inv.is_purchase_document() and inv.x_fae_incoming_doc_id and inv.x_document_type in ('FE','FEE'):
                         inv.x_fae_incoming_doc_id.invoice_id = inv.id
                         inv.x_fae_incoming_doc_id.purchase_registried = True
+        return self
 
     # cron Job: Envia a hacienda todos los documentos de clientes no enviados a hacienda
     def _send_invoices_dgt(self, max_invoices=20):  # cron

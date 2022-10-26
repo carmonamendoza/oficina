@@ -105,22 +105,25 @@ class PartnerElectronic(models.Model):
         if self.x_exo_modality == 'M':
             self.property_account_position_id = None
 
-    @api.onchange('x_exo_exoneration_number')
-    def _onchange_x_exo_exoneration_number(self):
-        res = {}
-        if self.x_exo_exoneration_number:
-            res = self.action_get_exoneration_data()
-        return res
 
-    def unlink(self):
-        return super(PartnerElectronic, self).unlink()
+    # Se dicidió no traer los datos en el onchange porque las exoneraciones por leyes especiales no son aceptados
+    # por la página de consulta de exoneracione
+    # @api.onchange('x_exo_exoneration_number')
+    # def _onchange_x_exo_exoneration_number(self):
+    #     res = {}
+    #     if self.x_exo_exoneration_number:
+    #         res = self.action_get_exoneration_data()
+    #     return res
 
-    def write(self, vals):
-        x = 1
-        # for rec in self:
-        #     if rec.x_exo_modality == 'M' and rec.property_account_position_id:
-        #         rec.property_account_position_id = None
-        return super(PartnerElectronic, self).write(vals)
+    # def unlink(self):
+    #     return super(PartnerElectronic, self).unlink()
+
+    # def write(self, vals):
+    #     x = 1
+    #     # for rec in self:
+    #     #     if rec.x_exo_modality == 'M' and rec.property_account_position_id:
+    #     #         rec.property_account_position_id = None
+    #     return super(PartnerElectronic, self).write(vals)
 
     def action_get_economic_activities(self):
         if self.vat:
@@ -173,7 +176,7 @@ class PartnerElectronic(models.Model):
                     if line.exoneration_number == exo_number:
                         s2 = set(line.cabys_list.split(', '))
                         if len(s1.symmetric_difference(s2)) == 0:
-                            exo_line = line     # las lista de cambias es exactamente igual por lo que actualiza los datos del registro existente
+                            exo_line = line     # las lista de CAByS es exactamente igual por lo que actualiza los datos del registro existente
 
                 if exo_line:
                     # res = exo_line.write(vals)
@@ -184,7 +187,6 @@ class PartnerElectronic(models.Model):
                 self.x_exo_exoneration_number = None
                 self.property_account_position_id = None
                 self.x_exo_modality = 'M'
-
             else:
                 self.x_exo_type_exoneration = json_response['exoAuthorization_id']
                 self.x_exo_institution_name = json_response['nombreInstitucion']
@@ -207,6 +209,7 @@ class PartnerElectronic(models.Model):
                         exoneration = exo_line
                         break
         return exoneration
+
 
 class PartnerExoneration(models.Model):
     _name = "xpartner.exoneration"
@@ -243,7 +246,6 @@ class PartnerExoneration(models.Model):
     def action_get_exoneration_data(self):
         if not self.exoneration_number:
             return
-
         json_response = fae_utiles.get_exoneration_info(self.env, self.exoneration_number)
         if json_response["status"] == 200:
             if json_response['identificacion'] != self.partner_id.vat:

@@ -93,18 +93,19 @@ class SaleOrderLine(models.Model):
                     if not order.partner_id:
                         raise ValidationError('El impuesto: %s es para exoneración pero el documento no le han definido un cliente' % tax.name)
                     if order.partner_id.x_special_tax_type != 'E':
-                        raise ValidationError('El impuesto: %s es para exoneración pero el cliente no tiene definido que es exonerado, prod: %s, cta: %s'
-                                              % (tax.name, (self.product_id and self.product_id.default_code), (self.account_id and self.account_id.code)))
+                        raise ValidationError('El impuesto: %s es para exoneración pero el cliente no tiene definido que es exonerado, prod: %s'
+                                              % (tax.name, (self.product_id and self.product_id.default_code)))
                     if order.partner_id.x_exo_modality != 'M' and not order.partner_id.property_account_position_id:
                         raise ValidationError('El impuesto: %s es para exoneración pero el cliente no tiene definido la posición fiscal' % tax.name)
                     elif order.partner_id.x_exo_modality == 'M' and not exoneration:
                         raise ValidationError('El impuesto: %s es para exoneración pero el CAByS del producto no está presente en alguna exoneración del cliente' % tax.name)
-                    if exoneration and tax.id.origin != exoneration.account_tax_id.id:
-                        tax_ids -= tax  # quita el tax exonerado que no corresponde con el de la exoneración
-                    if exoneration.account_tax_id not in tax_ids:
-                        exonerated = True
-                        # tax_ids += exoneration.account_tax_id
-                        tax_ids = exoneration.account_tax_id
+                    if exoneration:
+                        if tax.id.origin != exoneration.account_tax_id.id:
+                            tax_ids -= tax  # quita el tax exonerado que no corresponde con el de la exoneración
+                        if exoneration.account_tax_id not in tax_ids:
+                            exonerated = True
+                            # tax_ids += exoneration.account_tax_id
+                            tax_ids = exoneration.account_tax_id
             self.tax_id = tax_ids
         self.x_exoneration_id = exoneration.id if exonerated and exoneration else None
 
